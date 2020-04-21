@@ -90,14 +90,17 @@ def main(args, ITE=0):
     # Copying and Saving Initial State
     initial_state_dict = copy.deepcopy(model.state_dict())
     utils.checkdir(f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/")
-    torch.save(model, f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/initial_state_dict_{args.prune_type}.pth.tar")
+    # torch.save(model, f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/initial_state_dict_{args.prune_type}.pth")
+    torch.save(model.state_dict(), f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/initial_state_dict_{args.prune_type}.pth")
 
     # Making Initial Mask
     make_mask(model)
 
     # Optimizer and Loss
-    optimizer = torch.optim.Adam(model.parameters(), weight_decay=1e-4)
-    criterion = nn.CrossEntropyLoss() # Default was F.nll_loss
+    # optimizer = torch.optim.Adam(model.parameters(), weight_decay=1e-4)
+    optimizer = torch.optim.SGD([{'params': model.parameters(), 'initial_lr': 1e-3}], lr=args.lr, momentum=0.9, weight_decay=1e-4)
+    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50, 75], gamma=0.1, last_epoch=75)
+    criterion = nn.CrossEntropyLoss() # Default was F.nll_loss; why test, train different?
 
     # Layer Looper
     for name, param in model.named_parameters():
@@ -144,13 +147,16 @@ def main(args, ITE=0):
                 step = 0
             else:
                 original_initialization(mask, initial_state_dict)
-            optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+            # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+            # TODO: SGD + warmup
+            optimizer = torch.optim.SGD([{'params': model.parameters(), 'initial_lr': 1e-3}], lr=args.lr, momentum=0.9, weight_decay=1e-4)
+            lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50, 75], gamma=0.1, last_epoch=75)
         print(f"\n--- Pruning Level [{ITE}:{_ite}/{ITERATION}]: ---")
 
         # Print the table of Nonzeros in each layer
         comp1 = utils.print_nonzeros(model)
         comp[_ite] = comp1
-        pbar = tqdm(range(args.end_iter))
+        pbar = tqdm(range(args.end_iter))  # process bar
 
         for iter_ in pbar:
 
@@ -158,17 +164,22 @@ def main(args, ITE=0):
             if iter_ % args.valid_freq == 0:
                 accuracy = test(model, test_loader, criterion)
 
-                # Save Weights
+                # Save Weights for each _ite
                 if accuracy > best_accuracy:
                     best_accuracy = accuracy
                     utils.checkdir(f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/")
-                    torch.save(model,f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{_ite}_model_{args.prune_type}.pth.tar")
+                    # torch.save(model,f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{_ite}_model_{args.prune_type}.pth")
+                    torch.save(model.state_dict(),f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{_ite}_model_{args.prune_type}.pth")
+
 
             # Training
             loss = train(model, train_loader, optimizer, criterion)
             all_loss[iter_] = loss
             all_accuracy[iter_] = accuracy
             
+            # warm up
+            lr_scheduler.step()
+
             # Frequency for Printing Accuracy and Loss
             if iter_ % args.print_freq == 0:
                 pbar.set_description(
@@ -230,7 +241,7 @@ def train(model, train_loader, optimizer, criterion):
     EPS = 1e-6
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.train()
-    for batch_idx, (imgs, targets) in enumerate(train_loader):
+    for batch_idx, (imgs, targets) in enumerate(train_loader):  # each epoch
         optimizer.zero_grad()
         #imgs, targets = next(train_loader)
         imgs, targets = imgs.to(device), targets.to(device)
@@ -243,7 +254,7 @@ def train(model, train_loader, optimizer, criterion):
             if 'weight' in name:
                 tensor = p.data.cpu().numpy()
                 grad_tensor = p.grad.data.cpu().numpy()
-                grad_tensor = np.where(tensor < EPS, 0, grad_tensor)
+                grad_tensor = np.where(tensor < EPS, 0, grad_tensor)  # when zero
                 p.grad.data = torch.from_numpy(grad_tensor).to(device)
         optimizer.step()
     return train_loss.item()
@@ -276,7 +287,7 @@ def prune_by_percentile(percent, resample=False, reinit=False,**kwargs):
         for name, param in model.named_parameters():
 
             # We do not prune bias term
-            if 'weight' in name:
+            if 'weight' in name:  # each layer
                 tensor = param.data.cpu().numpy()
                 alive = tensor[np.nonzero(tensor)] # flattened array of nonzero values
                 percentile_value = np.percentile(abs(alive), percent)
@@ -286,7 +297,7 @@ def prune_by_percentile(percent, resample=False, reinit=False,**kwargs):
                 new_mask = np.where(abs(tensor) < percentile_value, 0, mask[step])
                 
                 # Apply new weight and mask
-                param.data = torch.from_numpy(tensor * new_mask).to(weight_dev)
+                param.data = torch.from_numpy(tensor * new_mask).to(weight_dev)  # zero out
                 mask[step] = new_mask
                 step += 1
         step = 0
