@@ -43,7 +43,7 @@ def main(args, ITE=0):
 
     elif args.dataset == "cifar10":
         traindataset = datasets.CIFAR10('../data', train=True, download=True,transform=transform)
-        testdataset = datasets.CIFAR10('../data', train=False, transform=transform)      
+        testdataset = datasets.CIFAR10('../data', train=False, transform=transform)
         from archs.cifar10 import AlexNet, LeNet5, fc1, vgg, resnet, densenet 
 
     elif args.dataset == "fashionmnist":
@@ -62,9 +62,13 @@ def main(args, ITE=0):
         print("\nWrong Dataset choice \n")
         exit()
 
-    train_loader = torch.utils.data.DataLoader(traindataset[:45000], batch_size=args.batch_size, shuffle=True, num_workers=0,drop_last=False)  # 45K train dataset
+    if args.dataset == "cifar10":
+        trainsampler = torch.utils.data.RandomSampler(traindataset, replacement=True, num_samples=45000)  # 45K train dataset
+        train_loader = torch.utils.data.DataLoader(traindataset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=False, sampler=trainsampler)
+    else:
+        train_loader = torch.utils.data.DataLoader(traindataset, batch_size=args.batch_size, shuffle=True, num_workers=0, drop_last=False)
     #train_loader = cycle(train_loader)
-    test_loader = torch.utils.data.DataLoader(testdataset, batch_size=args.batch_size, shuffle=False, num_workers=0,drop_last=True)
+    test_loader = torch.utils.data.DataLoader(testdataset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=True)
     
     # Importing Network Architecture
     global model
