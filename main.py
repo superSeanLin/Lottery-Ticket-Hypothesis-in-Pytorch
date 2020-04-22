@@ -18,6 +18,7 @@ import torchvision.utils as vutils
 import seaborn as sns
 import torch.nn.init as init
 import pickle
+from scheduler import GradualWarmupScheduler
 
 # Custom Libraries
 import utils
@@ -61,7 +62,7 @@ def main(args, ITE=0):
         print("\nWrong Dataset choice \n")
         exit()
 
-    train_loader = torch.utils.data.DataLoader(traindataset, batch_size=args.batch_size, shuffle=True, num_workers=0,drop_last=False)
+    train_loader = torch.utils.data.DataLoader(traindataset[:45000], batch_size=args.batch_size, shuffle=True, num_workers=0,drop_last=False)  # 45K train dataset
     #train_loader = cycle(train_loader)
     test_loader = torch.utils.data.DataLoader(testdataset, batch_size=args.batch_size, shuffle=False, num_workers=0,drop_last=True)
     
@@ -97,9 +98,10 @@ def main(args, ITE=0):
     make_mask(model)
 
     # Optimizer and Loss
-    # optimizer = torch.optim.Adam(model.parameters(), weight_decay=1e-4)
-    optimizer = torch.optim.SGD([{'params': model.parameters(), 'initial_lr': 1e-3}], lr=args.lr, momentum=0.9, weight_decay=1e-4)
-    lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50, 75], gamma=0.1, last_epoch=75)
+    optimizer = torch.optim.SGD([{'params': model.parameters(), 'initial_lr': 0.03}], lr=args.lr, momentum=0.9, weight_decay=1e-4)
+    # warm up schedule; scheduler_warmup is chained with schduler_steplr
+    scheduler_steplr = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[0, 14], gamma=0.1, last_epoch=-1)
+    scheduler_warmup = GradualWarmupScheduler(optimizer, multiplier=1, total_epoch=56, after_scheduler=scheduler_steplr)  # 20K=(idx)56, 35K=70 
     criterion = nn.CrossEntropyLoss() # Default was F.nll_loss; why test, train different?
 
     # Layer Looper
@@ -147,10 +149,9 @@ def main(args, ITE=0):
                 step = 0
             else:
                 original_initialization(mask, initial_state_dict)
-            # optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
-            # TODO: SGD + warmup
-            optimizer = torch.optim.SGD([{'params': model.parameters(), 'initial_lr': 1e-3}], lr=args.lr, momentum=0.9, weight_decay=1e-4)
-            lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50, 75], gamma=0.1, last_epoch=75)
+            optimizer = torch.optim.SGD([{'params': model.parameters(), 'initial_lr': 0.03}], lr=args.lr, momentum=0.9, weight_decay=1e-4)
+            scheduler_steplr = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[0, 14], gamma=0.1, last_epoch=-1)
+            scheduler_warmup = GradualWarmupScheduler(optimizer, multiplier=1, total_epoch=56, after_scheduler=scheduler_steplr)  # 20K=(idx)56, 35K=70 
         print(f"\n--- Pruning Level [{ITE}:{_ite}/{ITERATION}]: ---")
 
         # Print the table of Nonzeros in each layer
@@ -178,12 +179,13 @@ def main(args, ITE=0):
             all_accuracy[iter_] = accuracy
             
             # warm up
-            lr_scheduler.step()
+            scheduler_warmup.step()
+            _lr = optimizer.param_groups[0]['lr']
 
             # Frequency for Printing Accuracy and Loss
             if iter_ % args.print_freq == 0:
                 pbar.set_description(
-                    f'Train Epoch: {iter_}/{args.end_iter} Loss: {loss:.6f} Accuracy: {accuracy:.2f}% Best Accuracy: {best_accuracy:.2f}%')       
+                    f'Train Epoch: {iter_}/{args.end_iter} Loss: {loss:.6f} Accuracy: {accuracy:.2f}% Best Accuracy: {best_accuracy:.2f}% Learning Rate: {_lr:.6f}%')       
 
         writer.add_scalar('Accuracy/test', best_accuracy, comp1)
         bestacc[_ite]=best_accuracy
@@ -411,7 +413,7 @@ if __name__=="__main__":
     parser.add_argument("--lr",default= 1.2e-3, type=float, help="Learning rate")
     parser.add_argument("--batch_size", default=60, type=int)
     parser.add_argument("--start_iter", default=0, type=int)
-    parser.add_argument("--end_iter", default=100, type=int)
+    parser.add_argument("--end_iter", default=85, type=int)
     parser.add_argument("--print_freq", default=1, type=int)
     parser.add_argument("--valid_freq", default=1, type=int)
     parser.add_argument("--resume", action="store_true")
