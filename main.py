@@ -186,6 +186,10 @@ def main(args, ITE=0):
             scheduler_warmup.step()
             _lr = optimizer.param_groups[0]['lr']
 
+            # Save the model during training
+            if args.save_freq > 0 and iter_ % args.save_freq == 0:
+                torch.save(model.state_dict(),f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{_ite}_model_{args.prune_type}_epoch{iter_}.pth")
+                
             # Frequency for Printing Accuracy and Loss
             if iter_ % args.print_freq == 0:
                 pbar.set_description(
@@ -427,6 +431,7 @@ if __name__=="__main__":
     parser.add_argument("--arch_type", default="fc1", type=str, help="fc1 | lenet5 | alexnet | vgg16 | resnet18 | densenet121")
     parser.add_argument("--prune_percent", default=10, type=int, help="Pruning percent")
     parser.add_argument("--prune_iterations", default=35, type=int, help="Pruning iterations count")
+    parser.add_argument("--save_freq", default=10, type=int, help="Save frequency during training")
 
     
     args = parser.parse_args()
