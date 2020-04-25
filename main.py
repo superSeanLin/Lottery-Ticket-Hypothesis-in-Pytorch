@@ -42,8 +42,20 @@ def main(args, ITE=0):
         from archs.mnist import AlexNet, LeNet5, fc1, vgg, resnet
 
     elif args.dataset == "cifar10":
-        traindataset = datasets.CIFAR10('../data', train=True, download=True,transform=transform)
-        testdataset = datasets.CIFAR10('../data', train=False, transform=transform)
+        transform_train = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ])
+
+        transform_test = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ]) 
+        
+        traindataset = datasets.CIFAR10('../data', train=True, download=True,transform=transform_train)
+        testdataset = datasets.CIFAR10('../data', train=False, transform=transform_test)
         from archs.cifar10 import AlexNet, LeNet5, fc1, vgg, resnet, densenet 
 
     elif args.dataset == "fashionmnist":
@@ -63,12 +75,13 @@ def main(args, ITE=0):
         exit()
 
     if args.dataset == "cifar10":
-        trainsampler = torch.utils.data.RandomSampler(traindataset, replacement=True, num_samples=45000)  # 45K train dataset
-        train_loader = torch.utils.data.DataLoader(traindataset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=False, sampler=trainsampler)
+        #trainsampler = torch.utils.data.RandomSampler(traindataset, replacement=True, num_samples=45000)  # 45K train dataset
+        #train_loader = torch.utils.data.DataLoader(traindataset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=False, sampler=trainsampler)
+        train_loader = torch.utils.data.DataLoader(traindataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
     else:
         train_loader = torch.utils.data.DataLoader(traindataset, batch_size=args.batch_size, shuffle=True, num_workers=0, drop_last=False)
     #train_loader = cycle(train_loader)
-    test_loader = torch.utils.data.DataLoader(testdataset, batch_size=args.batch_size, shuffle=False, num_workers=0, drop_last=True)
+    test_loader = torch.utils.data.DataLoader(testdataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
     
     # Importing Network Architecture
     global model
@@ -104,9 +117,9 @@ def main(args, ITE=0):
     # Optimizer and Loss
     optimizer = torch.optim.SGD([{'params': model.parameters(), 'initial_lr': 0.03}], lr=args.lr, momentum=0.9, weight_decay=1e-4)
     # warm up schedule; scheduler_warmup is chained with schduler_steplr
-    scheduler_steplr = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[0, 14], gamma=0.1, last_epoch=-1)
+    scheduler_steplr = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30, 70], gamma=0.1, last_epoch=-1)
     if args.warmup:
-        scheduler_warmup = GradualWarmupScheduler(optimizer, multiplier=1, total_epoch=56, after_scheduler=scheduler_steplr)  # 20K=(idx)56, 35K=70 
+        scheduler_warmup = GradualWarmupScheduler(optimizer, multiplier=1, total_epoch=50, after_scheduler=scheduler_steplr)  # 20K=(idx)56, 35K=70 
     criterion = nn.CrossEntropyLoss() # Default was F.nll_loss; why test, train different?
 
     # Layer Looper
@@ -434,7 +447,8 @@ if __name__=="__main__":
     parser.add_argument("--prune_percent", default=10, type=int, help="Pruning percent")
     parser.add_argument("--prune_iterations", default=35, type=int, help="Pruning iterations count")
     parser.add_argument("--save_freq", default=10, type=int, help="Save frequency during training")
-    parser.add_argument("--warmup", default=False, type=bool, help="lr warmup")
+    #parser.add_argument("--warmup", default=False, type=bool, help="lr warmup")
+    parser.add_argument("--warmup", action="store_true")
 
     
     args = parser.parse_args()
