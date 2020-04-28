@@ -117,7 +117,7 @@ def main(args, ITE=0):
     # Optimizer and Loss
     optimizer = torch.optim.SGD([{'params': model.parameters(), 'initial_lr': 0.03}], lr=args.lr, momentum=0.9, weight_decay=1e-4)
     # warm up schedule; scheduler_warmup is chained with schduler_steplr
-    scheduler_steplr = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[0, 30], gamma=0.1, last_epoch=-1)
+    scheduler_steplr = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[0, 15], gamma=0.1, last_epoch=-1)
     if args.warmup:
         scheduler_warmup = GradualWarmupScheduler(optimizer, multiplier=1, total_epoch=50, after_scheduler=scheduler_steplr)  # 20K=(idx)56, 35K=70 
     criterion = nn.CrossEntropyLoss() # Default was F.nll_loss; why test, train different?
