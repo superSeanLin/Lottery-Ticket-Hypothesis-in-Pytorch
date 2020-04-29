@@ -33,6 +33,14 @@ sns.set_style('darkgrid')
 def main(args, ITE=0):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     reinit = True if args.prune_type=="reinit" else False
+    if args.save_dir:
+        utils.checkdir(f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{args.save_dir}/")
+        utils.checkdir(f"{os.getcwd()}/plots/lt/{args.arch_type}/{args.dataset}/{args.save_dir}/")
+        utils.checkdir(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/{args.save_dir}/")
+    else:
+        utils.checkdir(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/")
+        utils.checkdir(f"{os.getcwd()}/plots/lt/{args.arch_type}/{args.dataset}/")
+        utils.checkdir(f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/")
 
     # Data Loader
     transform=transforms.Compose([transforms.ToTensor(),transforms.Normalize((0.1307,), (0.3081,))])
@@ -102,17 +110,27 @@ def main(args, ITE=0):
         print("\nWrong Model choice\n")
         exit()
 
+    model = nn.DataParallel(model)
     # Weight Initialization
     model.apply(weight_init)
 
     # Copying and Saving Initial State
     initial_state_dict = copy.deepcopy(model.state_dict())
-    utils.checkdir(f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/")
-    # torch.save(model, f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/initial_state_dict_{args.prune_type}.pth")
-    torch.save(model.state_dict(), f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/initial_state_dict_{args.prune_type}.pth")
+    if args.save_dir:
+        torch.save(model.state_dict(), f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{args.save_dir}/initial_state_dict_{args.prune_type}.pth")
+    else:
+        torch.save(model.state_dict(), f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/initial_state_dict_{args.prune_type}.pth")
+    
+    # global total_params
+    total_params = 0
+    # Layer Looper
+    for name, param in model.named_parameters():
+        print(name, param.size())
+        total_params += param.numel()
+
 
     # Making Initial Mask
-    make_mask(model)
+    make_mask(model, total_params)
 
     # Optimizer and Loss
     optimizer = torch.optim.SGD([{'params': model.parameters(), 'initial_lr': 0.03}], lr=args.lr, momentum=0.9, weight_decay=1e-4)
@@ -122,11 +140,7 @@ def main(args, ITE=0):
         scheduler_warmup = GradualWarmupScheduler(optimizer, multiplier=1, total_epoch=50, after_scheduler=scheduler_steplr)  # 20K=(idx)56, 35K=70 
     criterion = nn.CrossEntropyLoss() # Default was F.nll_loss; why test, train different?
 
-    # Layer Looper
-    for name, param in model.named_parameters():
-        print(name, param.size())
-
-    # Pruning
+        # Pruning
     # NOTE First Pruning Iteration is of No Compression
     bestacc = 0.0
     best_accuracy = 0
@@ -140,7 +154,7 @@ def main(args, ITE=0):
 
     for _ite in range(args.start_iter, ITERATION):
         if not _ite == 0:
-            prune_by_percentile(args.prune_percent, resample=resample, reinit=reinit)
+            prune_by_percentile(args.prune_percent, resample=resample, reinit=reinit, total_params = total_params)
             if reinit:
                 model.apply(weight_init)
                 #if args.arch_type == "fc1":
@@ -161,9 +175,11 @@ def main(args, ITE=0):
                 step = 0
                 for name, param in model.named_parameters():
                     if 'weight' in name:
-                        weight_dev = param.device
-                        param.data = torch.from_numpy(param.data.cpu().numpy() * mask[step]).to(weight_dev)
-                        step = step + 1
+                        param_frac = param.numel() / total_params
+                        if param_frac>0.01:
+                            weight_dev = param.device
+                            param.data = torch.from_numpy(param.data.cpu().numpy() * mask[step]).to(weight_dev)
+                            step = step + 1
                 step = 0
             else:
                 original_initialization(mask, initial_state_dict)
@@ -193,13 +209,15 @@ def main(args, ITE=0):
                 # Save Weights for each _ite
                 if accuracy > best_accuracy:
                     best_accuracy = accuracy
-                    utils.checkdir(f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/")
-                    # torch.save(model,f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{_ite}_model_{args.prune_type}.pth")
-                    torch.save(model.state_dict(),f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{_ite}_model_{args.prune_type}.pth")
+                    if args.save_dir:
+                        torch.save(model.state_dict(), f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{args.save_dir}/{_ite}_model_{args.prune_type}.pth")
+                    else:
+                        # torch.save(model,f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{_ite}_model_{args.prune_type}.pth")
+                        torch.save(model.state_dict(),f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{_ite}_model_{args.prune_type}.pth")
 
 
             # Training
-            loss = train(model, train_loader, optimizer, criterion)
+            loss = train(model, train_loader, optimizer, criterion, total_params)
             all_loss[iter_] = loss
             all_accuracy[iter_] = accuracy
             
@@ -210,7 +228,10 @@ def main(args, ITE=0):
 
             # Save the model during training
             if args.save_freq > 0 and iter_ % args.save_freq == 0:
-                torch.save(model.state_dict(),f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{_ite}_model_{args.prune_type}_epoch{iter_}.pth")
+                if args.save_dir:
+                    torch.save(model.state_dict(), f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{args.save_dir}/{_ite}_model_{args.prune_type}_epoch{iter_}.pth") 
+                else:
+                    torch.save(model.state_dict(),f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{_ite}_model_{args.prune_type}_epoch{iter_}.pth")
                 
             # Frequency for Printing Accuracy and Loss
             if iter_ % args.print_freq == 0:
@@ -230,19 +251,27 @@ def main(args, ITE=0):
         plt.ylabel("Loss and Accuracy") 
         plt.legend() 
         plt.grid(color="gray") 
-        utils.checkdir(f"{os.getcwd()}/plots/lt/{args.arch_type}/{args.dataset}/")
-        plt.savefig(f"{os.getcwd()}/plots/lt/{args.arch_type}/{args.dataset}/{args.prune_type}_LossVsAccuracy_{comp1}.png", dpi=1200) 
+        if args.save_dir:
+            plt.savefig(f"{os.getcwd()}/plots/lt/{args.arch_type}/{args.dataset}/{args.save_dir}/{args.prune_type}_LossVsAccuracy_{comp1}.png", dpi=1200) 
+        else:
+            plt.savefig(f"{os.getcwd()}/plots/lt/{args.arch_type}/{args.dataset}/{args.prune_type}_LossVsAccuracy_{comp1}.png", dpi=1200) 
         plt.close()
 
         # Dump Plot values
-        utils.checkdir(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/")
-        all_loss.dump(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/{args.prune_type}_all_loss_{comp1}.dat")
-        all_accuracy.dump(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/{args.prune_type}_all_accuracy_{comp1}.dat")
+        if args.save_dir:
+            all_loss.dump(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/{args.save_dir}/{args.prune_type}_all_loss_{comp1}.dat")
+            all_accuracy.dump(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/{args.save_dir}/{args.prune_type}_all_accuracy_{comp1}.dat")
+        else:
+            all_loss.dump(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/{args.prune_type}_all_loss_{comp1}.dat")
+            all_accuracy.dump(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/{args.prune_type}_all_accuracy_{comp1}.dat")
         
         # Dumping mask
-        utils.checkdir(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/")
-        with open(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/{args.prune_type}_mask_{comp1}.pkl", 'wb') as fp:
-            pickle.dump(mask, fp)
+        if args.save_dir:
+            with open(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/{args.save_dir}/{args.prune_type}_mask_{comp1}.pkl", 'wb') as fp:
+                pickle.dump(mask, fp)
+        else:
+            with open(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/{args.prune_type}_mask_{comp1}.pkl", 'wb') as fp:
+                pickle.dump(mask, fp)
         
         # Making variables into 0
         best_accuracy = 0
@@ -250,10 +279,12 @@ def main(args, ITE=0):
         all_accuracy = np.zeros(args.end_iter,float)
 
     # Dumping Values for Plotting
-    utils.checkdir(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/")
-    comp.dump(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/{args.prune_type}_compression.dat")
-    bestacc.dump(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/{args.prune_type}_bestaccuracy.dat")
-
+    if args.save_dir:
+        comp.dump(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/{args.save_dir}/{args.prune_type}_compression.dat")
+        bestacc.dump(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/{args.save_dir}/{args.prune_type}_bestaccuracy.dat")
+    else:
+        comp.dump(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/{args.prune_type}_compression.dat")
+        bestacc.dump(f"{os.getcwd()}/dumps/lt/{args.arch_type}/{args.dataset}/{args.prune_type}_bestaccuracy.dat")
     # Plotting
     a = np.arange(args.prune_iterations)
     plt.plot(a, bestacc, c="blue", label="Winning tickets") 
@@ -264,12 +295,14 @@ def main(args, ITE=0):
     plt.ylim(0,100)
     plt.legend() 
     plt.grid(color="gray") 
-    utils.checkdir(f"{os.getcwd()}/plots/lt/{args.arch_type}/{args.dataset}/")
-    plt.savefig(f"{os.getcwd()}/plots/lt/{args.arch_type}/{args.dataset}/{args.prune_type}_AccuracyVsWeights.png", dpi=1200) 
+    if args.save_dir:
+        plt.savefig(f"{os.getcwd()}/plots/lt/{args.arch_type}/{args.dataset}/{args.save_dir}/{args.prune_type}_AccuracyVsWeights.png", dpi=1200) 
+    else:
+        plt.savefig(f"{os.getcwd()}/plots/lt/{args.arch_type}/{args.dataset}/{args.prune_type}_AccuracyVsWeights.png", dpi=1200) 
     plt.close()                    
    
 # Function for Training
-def train(model, train_loader, optimizer, criterion):
+def train(model, train_loader, optimizer, criterion, total_params):
     EPS = 1e-6
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.train()
@@ -284,10 +317,12 @@ def train(model, train_loader, optimizer, criterion):
         # Freezing Pruned weights by making their gradients Zero
         for name, p in model.named_parameters():
             if 'weight' in name:
-                tensor = p.data.cpu().numpy()
-                grad_tensor = p.grad.data.cpu().numpy()
-                grad_tensor = np.where(tensor < EPS, 0, grad_tensor)  # when zero
-                p.grad.data = torch.from_numpy(grad_tensor).to(device)
+                param_frac = p.numel() / total_params
+                if param_frac>0.01:
+                    tensor = p.data.cpu().numpy()
+                    grad_tensor = p.grad.data.cpu().numpy()
+                    grad_tensor = np.where(tensor < EPS, 0, grad_tensor)  # when zero
+                    p.grad.data = torch.from_numpy(grad_tensor).to(device)
         optimizer.step()
     return train_loss.item()
 
@@ -320,35 +355,41 @@ def prune_by_percentile(percent, resample=False, reinit=False,**kwargs):
 
             # We do not prune bias term
             if 'weight' in name:  # each layer
-                tensor = param.data.cpu().numpy()
-                alive = tensor[np.nonzero(tensor)] # flattened array of nonzero values
-                percentile_value = np.percentile(abs(alive), percent)
+                param_frac = param.numel() / total_params
+                if param_frac>0.01:
+                    tensor = param.data.cpu().numpy()
+                    alive = tensor[np.nonzero(tensor)] # flattened array of nonzero values
+                    percentile_value = np.percentile(abs(alive), percent)
 
-                # Convert Tensors to numpy and calculate
-                weight_dev = param.device
-                new_mask = np.where(abs(tensor) < percentile_value, 0, mask[step])
-                
-                # Apply new weight and mask
-                param.data = torch.from_numpy(tensor * new_mask).to(weight_dev)  # zero out
-                mask[step] = new_mask
-                step += 1
+                    # Convert Tensors to numpy and calculate
+                    weight_dev = param.device
+                    new_mask = np.where(abs(tensor) < percentile_value, 0, mask[step])
+                    
+                    # Apply new weight and mask
+                    param.data = torch.from_numpy(tensor * new_mask).to(weight_dev)  # zero out
+                    mask[step] = new_mask
+                    step += 1
         step = 0
 
 # Function to make an empty mask of the same size as the model
-def make_mask(model):
+def make_mask(model, total_params):
     global step
     global mask
     step = 0
     for name, param in model.named_parameters(): 
-        if 'weight' in name:
+        this_num = param.numel()
+        frac = this_num/total_params
+        if 'weight' in name and frac>0.01:
             step = step + 1
     mask = [None]* step 
     step = 0
     for name, param in model.named_parameters(): 
         if 'weight' in name:
-            tensor = param.data.cpu().numpy()
-            mask[step] = np.ones_like(tensor)
-            step = step + 1
+            param_frac = param.numel() / total_params
+            if param_frac>0.01:
+                tensor = param.data.cpu().numpy()
+                mask[step] = np.ones_like(tensor)
+                step = step + 1
     step = 0
 
 def original_initialization(mask_temp, initial_state_dict):
@@ -356,10 +397,14 @@ def original_initialization(mask_temp, initial_state_dict):
     
     step = 0
     for name, param in model.named_parameters(): 
-        if "weight" in name: 
-            weight_dev = param.device
-            param.data = torch.from_numpy(mask_temp[step] * initial_state_dict[name].cpu().numpy()).to(weight_dev)
-            step = step + 1
+        if "weight" in name:
+            param_frac = param.numel() / total_params
+            if param_frac>0.01:
+                weight_dev = param.device
+                param.data = torch.from_numpy(mask_temp[step] * initial_state_dict[name].cpu().numpy()).to(weight_dev)
+                step = step + 1
+            else:
+                param.data = initial_state_dict[name]
         if "bias" in name:
             param.data = initial_state_dict[name]
     step = 0
@@ -456,6 +501,7 @@ if __name__=="__main__":
     parser.add_argument("--save_freq", default=10, type=int, help="Save frequency during training")
     #parser.add_argument("--warmup", default=False, type=bool, help="lr warmup")
     parser.add_argument("--warmup", action="store_true")
+    parser.add_argument("--save_dir", default="", type=str, help="save dir")
 
     
     args = parser.parse_args()
