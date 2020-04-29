@@ -182,7 +182,7 @@ def main(args, ITE=0):
                             step = step + 1
                 step = 0
             else:
-                original_initialization(mask, initial_state_dict)
+                original_initialization(mask, initial_state_dict, total_params)
             # optimizer = torch.optim.SGD([{'params': model.parameters(), 'initial_lr': 0.03}], lr=args.lr, momentum=0.9, weight_decay=1e-4)
             # scheduler_steplr = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[0, 14], gamma=0.1, last_epoch=-1)
             # scheduler_warmup = GradualWarmupScheduler(optimizer, multiplier=1, total_epoch=56, after_scheduler=scheduler_steplr)  # 20K=(idx)56, 35K=70 
@@ -344,7 +344,7 @@ def test(model, test_loader, criterion):
     return accuracy
 
 # Prune by Percentile module
-def prune_by_percentile(percent, resample=False, reinit=False,**kwargs):
+def prune_by_percentile(percent, resample=False, reinit=False, total_params=1, **kwargs):
         global step
         global mask
         global model
@@ -392,7 +392,7 @@ def make_mask(model, total_params):
                 step = step + 1
     step = 0
 
-def original_initialization(mask_temp, initial_state_dict):
+def original_initialization(mask_temp, initial_state_dict, total_params):
     global model
     
     step = 0
