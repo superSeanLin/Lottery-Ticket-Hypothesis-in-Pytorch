@@ -20,9 +20,10 @@ import torch.nn.init as init
 import pickle
 from scheduler import GradualWarmupScheduler
 
+
 # Custom Libraries
 import utils
-
+from pyhessian import hessian
 # Tensorboard initialization
 writer = SummaryWriter()
 
@@ -92,6 +93,12 @@ def main(args, ITE=0):
     test_loader = torch.utils.data.DataLoader(testdataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
     
     # Importing Network Architecture
+    
+    #Initalize hessian dataloader, default batch_num 1
+    for inputs, labels in train_loader:
+        hessian_dataloader = (inputs, labels)
+        break
+        
     global model
     if args.arch_type == "fc1":
        model = fc1.fc1().to(device)
@@ -150,11 +157,11 @@ def main(args, ITE=0):
     step = 0
     all_loss = np.zeros(args.end_iter,float)
     all_accuracy = np.zeros(args.end_iter,float)
-
+    
 
     for _ite in range(args.start_iter, ITERATION):
         if not _ite == 0:
-            prune_by_percentile(args.prune_percent, resample=resample, reinit=reinit, total_params = total_params)
+            prune_by_percentile(args.prune_percent, resample=resample, reinit=reinit, total_params = total_params, hessian_aware = args.hessian, criterion = criterion, dataloader = hessian_dataloader, cuda = torch.cuda.is_available())
             if reinit:
                 model.apply(weight_init)
                 #if args.arch_type == "fc1":
@@ -344,10 +351,24 @@ def test(model, test_loader, criterion):
     return accuracy
 
 # Prune by Percentile module
-def prune_by_percentile(percent, resample=False, reinit=False, total_params=1, **kwargs):
+def prune_by_percentile(percent, resample=False, reinit=False, total_params=1, hessian_aware = False, criterion = None, dataloader = None, cuda = True, **kwargs):
         global step
         global mask
         global model
+
+        traces = {}
+        print("Start Hessian Computing")
+        if hessian_aware:
+            model.eval()
+            hessian_comp = hessian(model,criterion,data = dataloader,cuda = cuda)
+            for name, param in model.named_parameters():
+                param_frac = param.numel() / total_params
+                if 'weight' in name and param_frac>0.01:
+                    traces[name] = hessian_comp.trace(name)
+                    print("Trace for layer:{} is {}".format(name, traces[name]))
+            traces_thres = np.mean(np.array(traces.values()))
+            for name, trace in traces.items():
+                traces[name] = trace >= traces_thres
 
         # Calculate percentile value
         step = 0
@@ -359,6 +380,12 @@ def prune_by_percentile(percent, resample=False, reinit=False, total_params=1, *
                 if param_frac>0.01:
                     tensor = param.data.cpu().numpy()
                     alive = tensor[np.nonzero(tensor)] # flattened array of nonzero values
+                    if hessian:
+                        if traces[name]:
+                            percent/=2
+                        else:
+                            percent = min(percent*2, 0.3)
+                        print("Hessian-aware pruning percent for layer:{} is {}".format(name, percent))
                     percentile_value = np.percentile(abs(alive), percent)
 
                     # Convert Tensors to numpy and calculate
@@ -501,6 +528,7 @@ if __name__=="__main__":
     parser.add_argument("--save_freq", default=10, type=int, help="Save frequency during training")
     #parser.add_argument("--warmup", default=False, type=bool, help="lr warmup")
     parser.add_argument("--warmup", action="store_true")
+    parser.add_argument("--hessian", action="store_true")
     parser.add_argument("--save_dir", default="", type=str, help="save dir")
 
     
