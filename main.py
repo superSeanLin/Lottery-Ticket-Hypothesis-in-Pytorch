@@ -140,7 +140,7 @@ def main(args, ITE=0):
     make_mask(model, total_params)
 
     # Optimizer and Loss
-    optimizer = torch.optim.SGD([{'params': model.parameters(), 'initial_lr': 0.03}], lr=args.lr, momentum=0.9, weight_decay=1e-4)
+    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1e-4)
     # warm up schedule; scheduler_warmup is chained with schduler_steplr
     scheduler_steplr = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[0, 15], gamma=0.1, last_epoch=-1)
     if args.warmup:
@@ -196,7 +196,7 @@ def main(args, ITE=0):
         print(f"\n--- Pruning Level [{ITE}:{_ite}/{ITERATION}]: ---")
 
         # Optimizer and Loss
-        optimizer = torch.optim.SGD([{'params': model.parameters(), 'initial_lr': 0.03}], lr=args.lr, momentum=0.9, weight_decay=1e-4)
+        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1e-4)
         # warm up schedule; scheduler_warmup is chained with schduler_steplr
         scheduler_steplr = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[0, 15], gamma=0.1, last_epoch=-1)
         if args.warmup:
@@ -366,9 +366,9 @@ def prune_by_percentile(percent, resample=False, reinit=False, total_params=1, h
                 if 'weight' in name and param_frac>0.01:
                     traces[name] = hessian_comp.trace(name)
                     print("Trace for layer:{} is {}".format(name, traces[name]))
-            traces_thres = np.mean(np.array(traces.values()))
+            traces_thres = np.mean(np.array(list(traces.values())))
             for name, trace in traces.items():
-                traces[name] = trace >= traces_thres
+                traces[name] = np.mean(trace) >= traces_thres
 
         # Calculate percentile value
         step = 0
@@ -382,11 +382,13 @@ def prune_by_percentile(percent, resample=False, reinit=False, total_params=1, h
                     alive = tensor[np.nonzero(tensor)] # flattened array of nonzero values
                     if hessian:
                         if traces[name]:
-                            percent/=2
+                            hess_percent = percent/2
                         else:
-                            percent = min(percent*2, 0.3)
-                        print("Hessian-aware pruning percent for layer:{} is {}".format(name, percent))
-                    percentile_value = np.percentile(abs(alive), percent)
+                            hess_percent = min(percent*2, 30)
+                        print("Hessian-aware pruning percent for layer:{} is {}".format(name, hess_percent))
+                        percentile_value = np.percentile(abs(alive), hess_percent)
+                    else:
+                        percentile_value = np.percentile(abs(alive), percent)
 
                     # Convert Tensors to numpy and calculate
                     weight_dev = param.device
